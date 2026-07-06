@@ -115,6 +115,54 @@ void fl2k_callback(fl2k_data_info_t *data_info)
 			left -= r;
 	}
 }
+	data_info->sampletype_signed = 1;
+	data_info->g_buf = txbuf;
+
+	while (!do_exit && (left > 0)) {
+		g = fread(txbuf + (FL2K_BUF_LEN - left), 1, left, file);
+
+		if (ferror(file))
+			fprintf(stderr, "File Error\n");
+
+		if (feof(file)) {
+			if (repeat && (g >= 0)) {
+				repeat_cnt++;
+				fprintf(stderr, "repeat %d\n", repeat_cnt);
+				rewind(file);
+			} else {
+				fl2k_stop_tx(dev);
+				do_exit = 1;
+			}
+		}
+
+		if (r >= 0)
+			left -= g;
+	}
+}
+	data_info->sampletype_signed = 1;
+	data_info->b_buf = txbuf;
+
+	while (!do_exit && (left > 0)) {
+		b = fread(txbuf + (FL2K_BUF_LEN - left), 1, left, file);
+
+		if (ferror(file))
+			fprintf(stderr, "File Error\n");
+
+		if (feof(file)) {
+			if (repeat && (b >= 0)) {
+				repeat_cnt++;
+				fprintf(stderr, "repeat %d\n", repeat_cnt);
+				rewind(file);
+			} else {
+				fl2k_stop_tx(dev);
+				do_exit = 1;
+			}
+		}
+
+		if (r >= 0)
+			left -= b;
+	}
+}
 
 int main(int argc, char **argv)
 {
