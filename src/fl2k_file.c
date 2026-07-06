@@ -43,7 +43,9 @@ static fl2k_dev_t *dev = NULL;
 
 static volatile int do_exit = 0;
 static volatile int repeat = 1;
-FILE *file;
+FILE *rfile;
+FILE *gfile;
+FILE *bfile;
 char *txbuf = NULL;
 
 void usage(void)
@@ -95,16 +97,16 @@ void fl2k_callback(fl2k_data_info_t *data_info)
 	data_info->r_buf = txbuf;
 
 	while (!do_exit && (left > 0)) {
-		r = fread(txbuf + (FL2K_BUF_LEN - left), 1, left, file);
+		r = fread(txbuf + (FL2K_BUF_LEN - left), 1, left, rfile);
 
-		if (ferror(file))
+		if (ferror(rfile))
 			fprintf(stderr, "File Error\n");
 
-		if (feof(file)) {
+		if (feof(rfile)) {
 			if (repeat && (r >= 0)) {
 				repeat_cnt++;
 				fprintf(stderr, "repeat %d\n", repeat_cnt);
-				rewind(file);
+				rewind(rfile);
 			} else {
 				fl2k_stop_tx(dev);
 				do_exit = 1;
@@ -154,13 +156,13 @@ int main(int argc, char **argv)
 		exit(1);
 
 	if (strcmp(filename, "-") == 0) { /* Read samples from stdin */
-		file = stdin;
+		rfile = stdin;
 #ifdef _WIN32
 		_setmode(_fileno(stdin), _O_BINARY);
 #endif
 	} else {
-		file = fopen(filename, "rb");
-		if (!file) {
+		rfile = fopen(filename, "rb");
+		if (!rfile) {
 			fprintf(stderr, "Failed to open %s\n", filename);
 			return -ENOENT;
 		}
@@ -208,8 +210,274 @@ out:
 	if (txbuf)
 		free(txbuf);
 
-	if (file && (file != stdin))
-		fclose(file);
+	if (rfile && (rfile != stdin))
+		fclose(rfile);
+
+	return 0;
+}
+void fl2k_callback(fl2k_data_info_t *data_info)
+{
+	int r, left = FL2K_BUF_LEN;
+	static uint32_t repeat_cnt = 0;
+
+	if (data_info->device_error) {
+		fprintf(stderr, "Device error, exiting.\n");
+		do_exit = 1;
+		return;
+	}
+
+	data_info->sampletype_signed = 1;
+	data_info->g_buf = txbuf;
+
+	while (!do_exit && (left > 0)) {
+		r = fread(txbuf + (FL2K_BUF_LEN - left), 1, left, gfile);
+
+		if (ferror(gfile))
+			fprintf(stderr, "File Error\n");
+
+		if (feof(gfile)) {
+			if (repeat && (r >= 0)) {
+				repeat_cnt++;
+				fprintf(stderr, "repeat %d\n", repeat_cnt);
+				rewind(gfile);
+			} else {
+				fl2k_stop_tx(dev);
+				do_exit = 1;
+			}
+		}
+
+		if (r >= 0)
+			left -= r;
+	}
+}
+
+int main(int argc, char **argv)
+{
+#ifndef _WIN32
+	struct sigaction sigact, sigign;
+#endif
+	int r, opt, i;
+	uint32_t samp_rate = 100000000;
+	uint32_t buf_num = 0;
+	int dev_index = 0;
+	void *status;
+	char *filename = NULL;
+
+	while ((opt = getopt(argc, argv, "d:r:s:")) != -1) {
+		switch (opt) {
+		case 'd':
+			dev_index = (uint32_t)atoi(optarg);
+			break;
+		case 'r':
+			repeat = (int)atoi(optarg);
+			break;
+		case 's':
+			samp_rate = (uint32_t)atof(optarg);
+			break;
+		default:
+			usage();
+			break;
+		}
+	}
+
+	if (argc <= optind)
+		usage();
+	else
+		filename = argv[optind];
+
+	if (dev_index < 0)
+		exit(1);
+
+	if (strcmp(filename, "-") == 0) { /* Read samples from stdin */
+		gfile = stdin;
+#ifdef _WIN32
+		_setmode(_fileno(stdin), _O_BINARY);
+#endif
+	} else {
+		gfile = fopen(filename, "rb");
+		if (!gfile) {
+			fprintf(stderr, "Failed to open %s\n", filename);
+			return -ENOENT;
+		}
+	}
+
+	txbuf = malloc(FL2K_BUF_LEN);
+	if (!txbuf) {
+		fprintf(stderr, "malloc error!\n");
+		goto out;
+	}
+
+	fl2k_open(&dev, (uint32_t)dev_index);
+	if (NULL == dev) {
+		fprintf(stderr, "Failed to open fl2k device #%d.\n", dev_index);
+		goto out;
+	}
+
+	r = fl2k_start_tx(dev, fl2k_callback, NULL, 0);
+
+	/* Set the sample rate */
+	r = fl2k_set_sample_rate(dev, samp_rate);
+	if (r < 0)
+		fprintf(stderr, "WARNING: Failed to set sample rate.\n");
+
+
+#ifndef _WIN32
+	sigact.sa_handler = sighandler;
+	sigemptyset(&sigact.sa_mask);
+	sigact.sa_flags = 0;
+	sigign.sa_handler = SIG_IGN;
+	sigaction(SIGINT, &sigact, NULL);
+	sigaction(SIGTERM, &sigact, NULL);
+	sigaction(SIGQUIT, &sigact, NULL);
+	sigaction(SIGPIPE, &sigign, NULL);
+#else
+	SetConsoleCtrlHandler( (PHANDLER_ROUTINE) sighandler, TRUE );
+#endif
+
+	while (!do_exit)
+		sleep_ms(500);
+
+	fl2k_close(dev);
+
+out:
+	if (txbuf)
+		free(txbuf);
+
+	if (gfile && (gfile != stdin))
+		fclose(gfile);
+
+	return 0;
+}
+void fl2k_callback(fl2k_data_info_t *data_info)
+{
+	int r, left = FL2K_BUF_LEN;
+	static uint32_t repeat_cnt = 0;
+
+	if (data_info->device_error) {
+		fprintf(stderr, "Device error, exiting.\n");
+		do_exit = 1;
+		return;
+	}
+
+	data_info->sampletype_signed = 1;
+	data_info->b_buf = txbuf;
+
+	while (!do_exit && (left > 0)) {
+		r = fread(txbuf + (FL2K_BUF_LEN - left), 1, left, bfile);
+
+		if (ferror(bfile))
+			fprintf(stderr, "File Error\n");
+
+		if (feof(bfile)) {
+			if (repeat && (r >= 0)) {
+				repeat_cnt++;
+				fprintf(stderr, "repeat %d\n", repeat_cnt);
+				rewind(bfile);
+			} else {
+				fl2k_stop_tx(dev);
+				do_exit = 1;
+			}
+		}
+
+		if (r >= 0)
+			left -= r;
+	}
+}
+
+int main(int argc, char **argv)
+{
+#ifndef _WIN32
+	struct sigaction sigact, sigign;
+#endif
+	int r, opt, i;
+	uint32_t samp_rate = 100000000;
+	uint32_t buf_num = 0;
+	int dev_index = 0;
+	void *status;
+	char *filename = NULL;
+
+	while ((opt = getopt(argc, argv, "d:r:s:")) != -1) {
+		switch (opt) {
+		case 'd':
+			dev_index = (uint32_t)atoi(optarg);
+			break;
+		case 'r':
+			repeat = (int)atoi(optarg);
+			break;
+		case 's':
+			samp_rate = (uint32_t)atof(optarg);
+			break;
+		default:
+			usage();
+			break;
+		}
+	}
+
+	if (argc <= optind)
+		usage();
+	else
+		filename = argv[optind];
+
+	if (dev_index < 0)
+		exit(1);
+
+	if (strcmp(filename, "-") == 0) { /* Read samples from stdin */
+		bfile = stdin;
+#ifdef _WIN32
+		_setmode(_fileno(stdin), _O_BINARY);
+#endif
+	} else {
+		bfile = fopen(filename, "rb");
+		if (!bfile) {
+			fprintf(stderr, "Failed to open %s\n", filename);
+			return -ENOENT;
+		}
+	}
+
+	txbuf = malloc(FL2K_BUF_LEN);
+	if (!txbuf) {
+		fprintf(stderr, "malloc error!\n");
+		goto out;
+	}
+
+	fl2k_open(&dev, (uint32_t)dev_index);
+	if (NULL == dev) {
+		fprintf(stderr, "Failed to open fl2k device #%d.\n", dev_index);
+		goto out;
+	}
+
+	r = fl2k_start_tx(dev, fl2k_callback, NULL, 0);
+
+	/* Set the sample rate */
+	r = fl2k_set_sample_rate(dev, samp_rate);
+	if (r < 0)
+		fprintf(stderr, "WARNING: Failed to set sample rate.\n");
+
+
+#ifndef _WIN32
+	sigact.sa_handler = sighandler;
+	sigemptyset(&sigact.sa_mask);
+	sigact.sa_flags = 0;
+	sigign.sa_handler = SIG_IGN;
+	sigaction(SIGINT, &sigact, NULL);
+	sigaction(SIGTERM, &sigact, NULL);
+	sigaction(SIGQUIT, &sigact, NULL);
+	sigaction(SIGPIPE, &sigign, NULL);
+#else
+	SetConsoleCtrlHandler( (PHANDLER_ROUTINE) sighandler, TRUE );
+#endif
+
+	while (!do_exit)
+		sleep_ms(500);
+
+	fl2k_close(dev);
+
+out:
+	if (txbuf)
+		free(txbuf);
+
+	if (bfile && (bfile != stdin))
+		fclose(bfile);
 
 	return 0;
 }
